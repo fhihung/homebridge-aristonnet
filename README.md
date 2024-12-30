@@ -62,7 +62,9 @@ Here is an example configuration for adding the Ariston Water Heater to Homebrid
     "password": "your_password",     // Your AristonNet password
     "plantId": "your_plant_id",      // Device-specific PlantID
     "model": "VELIS Tech Dry",       // Customizable model name
-    "serial_number": "123456789"     // Optional serial number
+    "serial_number": "123456789",    // Optional serial number
+    "minTemperature": 40,            // Min Temperature
+    "maxTemperature": 80             // Max Temperature
   }
 ]
 ```
