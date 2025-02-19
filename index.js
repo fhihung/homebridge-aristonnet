@@ -19,29 +19,23 @@ class AristonWaterHeater {
     this.plantId = config.plantId;
     this.model = config.model || 'Unknown Model';
     this.serialNumber = config.serial_number || 'Unknown Serial';
-    
+
     this.token = null;
     this.tokenExpiry = null;
-    this.powerState = false;
-    this.targetTemperature = 30;
+    this.isFetching = false;
+    this.lastFetchTime = 0;
 
-    // Cache settings
-    this.cacheDuration = 30000; // 30 seconds
-    this.lastFetched = {
-      currentTemp: 0,
-      targetTemp: 0,
-      powerState: 0
-    };
-    
+    // Cache configuration
+    this.cacheDuration = 300000; // 5 minutes
+    this.activeRefreshThreshold = 10000; // 10 seconds
     this.cachedData = {
       currentTemp: 30,
       targetTemp: 30,
       powerState: false
     };
 
+    // Initialize services
     this.heaterService = new Service.Thermostat(this.name);
-
-    // Setup characteristics
     this.configureCharacteristics();
     
     this.informationService = new Service.AccessoryInformation()
@@ -49,7 +43,19 @@ class AristonWaterHeater {
       .setCharacteristic(Characteristic.Model, this.model)
       .setCharacteristic(Characteristic.SerialNumber, this.serialNumber);
 
-    this.login();
+    // Setup auto refresh
+    this.initializeAutoRefresh();
+    this.login().catch(err => this.log('Initial login error:', err));
+  }
+
+  initializeAutoRefresh() {
+    // Initial fetch
+    this.fetchDeviceState().catch(err => this.log('Initial fetch error:', err));
+    
+    // Periodic refresh every 5 minutes
+    this.autoRefreshInterval = setInterval(() => {
+      this.fetchDeviceState().catch(err => this.log('Auto refresh error:', err));
+    }, this.cacheDuration);
   }
 
   configureCharacteristics() {
@@ -67,16 +73,12 @@ class AristonWaterHeater {
     // Current Temperature
     this.heaterService
       .getCharacteristic(Characteristic.CurrentTemperature)
-      .on('get', (cb) => {
-        this.handleGetRequest('currentTemp', cb);
-      });
+      .on('get', (cb) => this.handleGetRequest('currentTemp', cb));
 
-    // Heating State
+    // Current Heating State
     this.heaterService
       .getCharacteristic(Characteristic.CurrentHeatingCoolingState)
-      .on('get', (cb) => {
-        this.handleGetRequest('powerState', cb);
-      });
+      .on('get', (cb) => this.handleGetRequest('powerState', cb));
 
     // Target Heating State
     this.heaterService
@@ -89,60 +91,82 @@ class AristonWaterHeater {
 
   async handleGetRequest(type, callback) {
     try {
-      // Force refresh if cache expired
-      if (Date.now() - this.lastFetched[type] > this.cacheDuration) {
+      const now = Date.now();
+      const timeSinceLastFetch = now - this.lastFetchTime;
+      
+      if (timeSinceLastFetch > this.activeRefreshThreshold && !this.isFetching) {
         await this.fetchDeviceState();
       }
-      
-      switch(type) {
-        case 'currentTemp':
-          callback(null, this.cachedData.currentTemp);
-          break;
-        case 'powerState':
-          callback(null, this.cachedData.powerState ? 
-            Characteristic.CurrentHeatingCoolingState.HEAT : 
-            Characteristic.CurrentHeatingCoolingState.OFF);
-          break;
-        case 'targetTemp':
-          callback(null, this.cachedData.targetTemp);
-          break;
-      }
+
+      this.sendCachedValue(type, callback);
     } catch (error) {
-      this.log(`Error getting ${type}:`, error);
-      callback(null, this.cachedData[type]);
+      this.log(`Error handling get request for ${type}:`, error);
+      this.sendCachedValue(type, callback);
+    }
+  }
+
+  sendCachedValue(type, callback) {
+    switch(type) {
+      case 'currentTemp':
+        callback(null, this.cachedData.currentTemp);
+        break;
+      case 'powerState':
+        callback(null, this.cachedData.powerState ? 
+          Characteristic.CurrentHeatingCoolingState.HEAT : 
+          Characteristic.CurrentHeatingCoolingState.OFF);
+        break;
+      case 'targetTemp':
+        callback(null, this.cachedData.targetTemp);
+        break;
     }
   }
 
   async fetchDeviceState() {
-    if (!this.token) {
-      await this.login();
-    }
+    if (this.isFetching) return;
+    this.isFetching = true;
 
     try {
+      if (!this.token || Date.now() >= this.tokenExpiry) {
+        await this.login();
+      }
+
       const response = await this.retryRequest(() => 
         axios.get(`https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}`, {
           headers: { 'ar.authToken': this.token },
         })
       );
 
-      const now = Date.now();
-      this.cachedData = {
-        currentTemp: response.data.temp || this.cachedData.currentTemp,
-        targetTemp: response.data.procReqTemp || response.data.reqTemp || this.cachedData.targetTemp,
-        powerState: response.data.on || this.cachedData.powerState
-      };
-      
-      this.lastFetched = {
-        currentTemp: now,
-        targetTemp: now,
-        powerState: now
-      };
-
-      this.log('State updated:', this.cachedData);
+      this.updateCache(response.data);
+      this.updateCharacteristics();
+      this.lastFetchTime = Date.now();
+      this.log('Device state updated successfully');
     } catch (error) {
       this.log('Failed to fetch device state:', error);
       throw error;
+    } finally {
+      this.isFetching = false;
     }
+  }
+
+  updateCache(data) {
+    this.cachedData = {
+      currentTemp: data.temp || this.cachedData.currentTemp,
+      targetTemp: data.procReqTemp || data.reqTemp || this.cachedData.targetTemp,
+      powerState: data.on || this.cachedData.powerState
+    };
+  }
+
+  updateCharacteristics() {
+    this.heaterService
+      .updateCharacteristic(Characteristic.CurrentTemperature, this.cachedData.currentTemp);
+    this.heaterService
+      .updateCharacteristic(Characteristic.TargetTemperature, this.cachedData.targetTemp);
+    this.heaterService
+      .updateCharacteristic(Characteristic.CurrentHeatingCoolingState, 
+        this.cachedData.powerState ? Characteristic.CurrentHeatingCoolingState.HEAT : Characteristic.CurrentHeatingCoolingState.OFF);
+    this.heaterService
+      .updateCharacteristic(Characteristic.TargetHeatingCoolingState, 
+        this.cachedData.powerState ? Characteristic.TargetHeatingCoolingState.HEAT : Characteristic.TargetHeatingCoolingState.OFF);
   }
 
   async login() {
@@ -186,7 +210,7 @@ class AristonWaterHeater {
       );
 
       this.log(`Temperature set: ${oldValue}°C → ${value}°C`);
-      this.lastFetched.targetTemp = 0; // Invalidate cache
+      await this.fetchDeviceState();
       callback(null);
     } catch (error) {
       this.log('Set temperature failed:', error);
@@ -197,8 +221,7 @@ class AristonWaterHeater {
   async setHeatingState(value, callback) {
     try {
       const newState = value === Characteristic.TargetHeatingCoolingState.HEAT;
-      this.log(`Setting power state: ${newState ? 'ON' : 'OFF'}`);
-
+      
       await this.retryRequest(() => 
         axios.post(`https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/switch`, newState, {
           headers: {
@@ -208,7 +231,7 @@ class AristonWaterHeater {
         })
       );
 
-      this.lastFetched.powerState = 0; // Invalidate cache
+      await this.fetchDeviceState();
       callback(null);
     } catch (error) {
       this.log('Set power state failed:', error);
@@ -219,16 +242,13 @@ class AristonWaterHeater {
   async retryRequest(requestFn, retries = 3, delay = 5000) {
     for (let i = 0; i < retries; i++) {
       try {
-        // Check token expiry
-        if (Date.now() >= this.tokenExpiry) {
-          await this.login();
-        }
+        if (Date.now() >= this.tokenExpiry) await this.login();
         return await requestFn();
       } catch (error) {
         if (i === retries - 1) throw error;
         
         if (error.response?.status === 401) {
-          this.log('Token expired, refreshing...');
+          this.log('Refreshing expired token...');
           await this.login();
         } else if (error.response?.status === 429) {
           this.log(`Rate limited, retrying in ${delay}ms...`);
@@ -240,5 +260,9 @@ class AristonWaterHeater {
 
   getServices() {
     return [this.heaterService, this.informationService];
+  }
+
+  shutdown() {
+    clearInterval(this.autoRefreshInterval);
   }
 }
