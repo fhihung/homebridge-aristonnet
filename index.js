@@ -14,48 +14,27 @@ class AristonWaterHeater {
   constructor(log, config) {
     this.log = log;
     this.name = config.name || 'Ariston Heater';
-    this.username = process.env.ARISTON_USERNAME || config.username;
-    this.password = process.env.ARISTON_PASSWORD || config.password;
+    this.username = config.username;
+    this.password = config.password;
     this.plantId = config.plantId;
     this.model = config.model || 'Unknown Model';
     this.serialNumber = config.serial_number || 'Unknown Serial';
-    
-    // State management
     this.token = null;
-    this.tokenExpiry = null;
-    this.deviceState = {
-      power: false,
-      mode: 'manual',
-      currentTemp: 30,
-      targetTemp: 40,
-      heatingActive: false,
-      eco: false 
-    };
+    this.powerState = false;
+    this.targetTemperature = 30;
 
-    // Cache và refresh
-    this.cacheDuration = 30000; // Cache trong 30 giây
-    this.lastUpdate = 0;
-    this.lastAPICall = 0;
-    this.minAPICallInterval = 30000; // Tối thiểu 30 giây giữa các lần call API
-    this.refreshTimeout = null;
+    // Thời gian cache dữ liệu (ms)
+    this.cacheDuration = 60000; // 1 phút
+    this.lastFetchedTime = 0;
+    this.cachedTemperature = 30;
 
-    // Config validation
-    this.minTemperature = Math.max(40, config.minTemperature || 40);
-    this.maxTemperature = Math.max(this.minTemperature, config.maxTemperature || 80);
-
-    this.initServices();
-    this.log.info('Ariston Water Heater initialized');
-  }
-
-  initServices() {
     this.heaterService = new Service.Thermostat(this.name);
-    
-    // Configure characteristics
+
     this.heaterService
       .getCharacteristic(Characteristic.TargetTemperature)
       .setProps({
-        minValue: this.minTemperature,
-        maxValue: this.maxTemperature,
+        minValue: 30,
+        maxValue: 100,
         minStep: 1
       })
       .on('set', this.setTargetTemperature.bind(this))
@@ -72,11 +51,7 @@ class AristonWaterHeater {
     this.heaterService
       .getCharacteristic(Characteristic.TargetHeatingCoolingState)
       .setProps({
-        validValues: [
-          Characteristic.TargetHeatingCoolingState.OFF,
-          Characteristic.TargetHeatingCoolingState.HEAT,
-          Characteristic.TargetHeatingCoolingState.AUTO
-        ]
+        validValues: [Characteristic.TargetHeatingCoolingState.OFF, Characteristic.TargetHeatingCoolingState.HEAT]
       })
       .on('set', this.setHeatingState.bind(this));
 
@@ -84,143 +59,8 @@ class AristonWaterHeater {
       .setCharacteristic(Characteristic.Manufacturer, 'Ariston')
       .setCharacteristic(Characteristic.Model, this.model)
       .setCharacteristic(Characteristic.SerialNumber, this.serialNumber);
-  }
 
-  setupAutoRefresh() {
-    // Tự động cập nhật trạng thái mỗi 30s
-    this.refreshInterval = setInterval(async () => {
-      try {
-        await this.fetchDeviceState();
-        this.updateHomekitState();
-      } catch (err) {
-        this.log.error('Auto-refresh failed:', err);
-      }
-    }, 30000);
-  }
-
-  async fetchDeviceState() {
-    const now = Date.now();
-    if (now - this.lastAPICall < this.minAPICallInterval) {
-      this.log.debug('Skipping API call: Too frequent');
-      return;
-    }
-
-    try {
-      this.log.debug('Fetching device state from API...');
-      const response = await this.makeRequest(() => 
-        axios.get(`https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}`, {
-          headers: { 'ar.authToken': this.token }
-        })
-      );
-
-      const data = response.data;
-      this.deviceState = {
-        power: data.on,
-        mode: data.mode,
-        currentTemp: data.temp || 30,
-        targetTemp: data.reqTemp || this.minTemperature,
-        heatingActive: data.heatingActive,
-        eco: data.eco // Giả sử API trả về trường eco
-      };
-      this.lastUpdate = Date.now();
-      this.lastAPICall = Date.now();
-      this.log.info('Device state updated successfully');
-    } catch (err) {
-      this.log.error('Failed to fetch device state:', err);
-      throw err;
-    }
-  }
-
-  mapModeToTargetState() {
-    if (this.deviceState.eco) {
-      return Characteristic.TargetHeatingCoolingState.AUTO;
-    } else if (this.deviceState.power) {
-      return Characteristic.TargetHeatingCoolingState.HEAT;
-    } else {
-      return Characteristic.TargetHeatingCoolingState.OFF;
-    }
-  }
-
-  async makeRequest(requestFunction) {
-    await this.ensureToken();
-    try {
-      const response = await requestFunction();
-      const config = response.config;
-      this.log.info(`✅ API Success: ${config.method.toUpperCase()} ${config.url}`);
-      return response;
-    } catch (error) {
-      const config = error.config;
-      this.log.error(`❌ API Failed: ${config?.method?.toUpperCase() || 'UNKNOWN'} ${config?.url || 'UNKNOWN'} - ${error.message}`);
-      
-      if (error.response?.status === 401) {
-        this.log.info('🔄 Refreshing expired token...');
-        await this.login();
-        return requestFunction();
-      }
-      throw error;
-    }
-  }
-    // Cải tiến các hàm GET
-    getCurrentTemperature(callback) {
-      this.log.debug('📡 Getting current temperature');
-      this.handleGetRequest();
-      callback(null, this.deviceState.currentTemp);
-    }
-  
-    getTargetTemperature(callback) {
-      this.log.debug('📡 Getting target temperature');
-      this.handleGetRequest();
-      callback(null, this.deviceState.targetTemp);
-    }
-  
-    async handleGetRequest() {
-      const now = Date.now();
-      if (now - this.lastUpdate > this.cacheDuration) {
-        this.log.debug('Cache expired, refreshing device state...');
-        try {
-          await this.fetchDeviceState();
-          this.updateHomekitState();
-        } catch (err) {
-          this.log.error('Background refresh failed:', err);
-        }
-      } else {
-        this.log.debug('Using cached device state');
-      }
-    }
-  
-    scheduleDebouncedRefresh() {
-      if (this.refreshTimeout) clearTimeout(this.refreshTimeout);
-      
-      this.refreshTimeout = setTimeout(() => {
-        this.fetchDeviceState()
-          .then(() => {
-            this.updateHomekitState();
-            this.log.debug('🔄 Device state updated by debounced refresh');
-          })
-          .catch(err => this.log.error('Debounced refresh failed:', err));
-      }, 500);
-    }
-
-  // Cập nhật các giá trị cho HomeKit
-  updateHomekitState() {
-    this.log.debug('🔄 Updating HomeKit characteristics');
-    
-    [
-      [Characteristic.CurrentTemperature, this.deviceState.currentTemp],
-      [Characteristic.TargetTemperature, this.deviceState.targetTemp],
-      [Characteristic.CurrentHeatingCoolingState, this.deviceState.heatingActive ? 1 : 0],
-      [Characteristic.TargetHeatingCoolingState, this.mapModeToTargetState()]
-    ].forEach(([characteristic, value]) => {
-      this.heaterService.getCharacteristic(characteristic).updateValue(value);
-    });
-  }
-
-  mapModeToTargetState(mode) {
-    return mode === 'timer' ? 
-      Characteristic.TargetHeatingCoolingState.AUTO :
-      (this.deviceState.power ? 
-        Characteristic.TargetHeatingCoolingState.HEAT : 
-        Characteristic.TargetHeatingCoolingState.OFF);
+    this.login();
   }
 
   async login() {
@@ -235,164 +75,179 @@ class AristonWaterHeater {
           appVer: '5.6.7772.40151',
           appId: 'com.remotethermo.aristonnet',
         },
+      }, {
+        headers: {
+          'Content-Type': 'application/json',
+        },
       });
 
       this.token = response.data.token;
-      this.tokenExpiry = Date.now() + (60 * 60 * 1000);
-      this.log.info('Login successful');
+      this.log('Login successful, token received:', this.token);
     } catch (error) {
-      this.log.error('Login failed:', error.response?.data || error.message);
-      throw error;
-    }
-  }
-
-  async ensureToken() {
-    if (!this.token || Date.now() >= this.tokenExpiry) {
-      await this.login();
+      this.log('Error logging in:', error);
     }
   }
 
   async getCurrentTemperature(callback) {
-    this.log.debug('Getting current temperature');
-    this.handleGetRequest().finally(() => {
-      callback(null, this.deviceState.currentTemp);
-    });
+    const currentTime = Date.now();
+    
+    // Kiểm tra cache để tránh gọi API quá nhiều
+    if (currentTime - this.lastFetchedTime < this.cacheDuration) {
+      this.log('Returning cached temperature:', this.cachedTemperature);
+      callback(null, this.cachedTemperature);
+      return;
+    }
+
+    if (!this.token) {
+      callback(null, 30); // Mặc định là 30 nếu không có token
+      return;
+    }
+
+    try {
+      const response = await this.retryRequest(() => axios.get(`https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}`, {
+        headers: {
+          'ar.authToken': this.token,
+        },
+      }));
+
+      let currentTemperature = response.data.temp;
+
+      if (typeof currentTemperature !== 'number' || !isFinite(currentTemperature)) {
+        this.log('Current temperature is invalid, defaulting to 30°C');
+        currentTemperature = 30; // Mặc định là 30°C nếu không hợp lệ
+      }
+
+      this.cachedTemperature = currentTemperature;
+      this.lastFetchedTime = Date.now(); // Cập nhật thời gian cache
+
+      this.log('Current temperature:', currentTemperature);
+      callback(null, currentTemperature);
+    } catch (error) {
+      this.log('Error getting current temperature:', error);
+      callback(null, 30); // Mặc định là 30°C nếu lỗi
+    }
   }
 
   async getTargetTemperature(callback) {
-    this.log.debug('Getting target temperature');
-    this.handleGetRequest().finally(() => {
-      callback(null, this.deviceState.targetTemp);
-    });
+    if (!this.token || !this.powerState) {
+      callback(null, this.targetTemperature); // Trả về giá trị đã lưu
+      return;
+    }
+
+    try {
+      const response = await this.retryRequest(() => axios.get(`https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}`, {
+        headers: {
+          'ar.authToken': this.token,
+        },
+      }));
+
+      let procReqTemp = response.data.procReqTemp;
+      let reqTemp = response.data.reqTemp;
+      this.targetTemperature = procReqTemp || reqTemp || 30; // Lấy từ procReqTemp hoặc reqTemp, mặc định là 30
+
+      this.log('Target temperature:', this.targetTemperature);
+      callback(null, this.targetTemperature);
+    } catch (error) {
+      this.log('Error getting target temperature:', error);
+      callback(null, 30); // Mặc định là 30°C nếu lỗi
+    }
+  }
+
+  async retryRequest(requestFunction, retries = 3, delay = 5000) {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        return await requestFunction();
+      } catch (error) {
+        if (error.response && error.response.status === 429) {
+          this.log(`Rate limited, retrying after ${delay}ms...`);
+          await this.sleep(delay);
+        } else {
+          throw error;
+        }
+      }
+    }
+    throw new Error('Max retries reached');
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async setTargetTemperature(value, callback) {
-    this.log.debug(`Setting target temperature to ${value}`);
+    if (!this.token) {
+      this.log('No token, cannot set temperature');
+      callback(new Error('No token'));
+      return;
+    }
+
+    value = Math.max(30, Math.min(value, 100)); // Giới hạn nhiệt độ từ 30 đến 100
+    this.targetTemperature = value;
+
     try {
-      await this.makeRequest(() => 
-        axios.post(
-          `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/temperature`,
-          { eco: false, new: value, old: this.deviceState.targetTemp },
-          { headers: { 'ar.authToken': this.token } }
-        )
-      );
-      
-      // Cập nhật state sau khi set thành công
-      await this.fetchDeviceState();
-      callback(null);
-    } catch (err) {
-      callback(err);
+      const response = await axios.post(`https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/temperature`, {
+        eco: false,
+        new: value,
+        old: 70,  // Cần lấy giá trị cũ từ hệ thống nếu cần
+      }, {
+        headers: {
+          'ar.authToken': this.token,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.data.success) {
+        this.log(`Target temperature set to ${value}°C`);
+        callback(null);
+      } else {
+        this.log('Error setting target temperature');
+        callback(new Error('Failed to set target temperature'));
+      }
+    } catch (error) {
+      this.log('Error setting temperature:', error);
+      callback(error);
     }
   }
 
   async setHeatingState(value, callback) {
-    this.log.debug(`Setting heating state to ${value}`);
+    if (!this.token) {
+      callback(new Error('No token'));
+      return;
+    }
+
+    const powerState = value === Characteristic.TargetHeatingCoolingState.HEAT;
+    this.powerState = powerState; // Cập nhật trạng thái bật/tắt
+    this.log(powerState ? 'Turning heater ON' : 'Turning heater OFF');
+
     try {
-      let actions = [];
+      const response = await axios.post(`https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/switch`, powerState, {
+        headers: {
+          'ar.authToken': this.token,
+          'Content-Type': 'application/json',
+        },
+      });
 
-      switch (value) {
-        case Characteristic.TargetHeatingCoolingState.AUTO:
-          // Bật thiết bị nếu đang tắt
-          if (!this.deviceState.power) {
-            actions.push(this.makeRequest(() =>
-              axios.post(
-                `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/switch`,
-                true,
-                { headers: { 'ar.authToken': this.token } }
-              )
-            ));
-          }
-          // Bật Eco và đặt mode timer
-          actions.push(
-            this.makeRequest(() =>
-              axios.post(
-                `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/switchEco`,
-                true,
-                { headers: { 'ar.authToken': this.token } }
-              )
-            ),
-            this.makeRequest(() =>
-              axios.post(
-                `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/mode`,
-                { mode: 'timer' },
-                { headers: { 'ar.authToken': this.token } }
-              )
-            )
-          );
-          break;
-
-        case Characteristic.TargetHeatingCoolingState.HEAT:
-          // Tắt Eco và đặt mode manual
-          actions.push(
-            this.makeRequest(() =>
-              axios.post(
-                `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/switchEco`,
-                false,
-                { headers: { 'ar.authToken': this.token } }
-              )
-            ),
-            this.makeRequest(() =>
-              axios.post(
-                `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/mode`,
-                { mode: 'manual' },
-                { headers: { 'ar.authToken': this.token } }
-              )
-            )
-          );
-          // Bật thiết bị nếu đang tắt
-          if (!this.deviceState.power) {
-            actions.push(this.makeRequest(() =>
-              axios.post(
-                `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/switch`,
-                true,
-                { headers: { 'ar.authToken': this.token } }
-              )
-            ));
-          }
-          break;
-
-        case Characteristic.TargetHeatingCoolingState.OFF:
-          // Tắt thiết bị và Eco
-          actions.push(
-            this.makeRequest(() =>
-              axios.post(
-                `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/switch`,
-                false,
-                { headers: { 'ar.authToken': this.token } }
-              )
-            ),
-            this.makeRequest(() =>
-              axios.post(
-                `https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}/switchEco`,
-                false,
-                { headers: { 'ar.authToken': this.token } }
-              )
-            )
-          );
-          break;
+      if (response.data.success) {
+        this.log('Heater state updated successfully');
+        callback(null);
+      } else {
+        this.log('Error updating heater state');
+        callback(new Error('Failed to update heater state'));
       }
-
-      // Thực hiện tuần tự các hành động
-      for (const action of actions) {
-        await action;
-      }
-
-      // Cập nhật trạng thái mới nhất
-      await this.fetchDeviceState();
-      callback(null);
-    } catch (err) {
-      callback(err);
+    } catch (error) {
+      this.log('Error updating heater state:', error);
+      callback(error);
     }
   }
 
   getHeatingState(callback) {
-    callback(null, this.deviceState.heatingActive ?
-      Characteristic.CurrentHeatingCoolingState.HEAT :
-      Characteristic.CurrentHeatingCoolingState.OFF
-    );
+    if (this.powerState) {
+      callback(null, Characteristic.CurrentHeatingCoolingState.HEAT);
+    } else {
+      callback(null, Characteristic.CurrentHeatingCoolingState.OFF);
+    }
   }
 
   getServices() {
-    return [this.heaterService, this.informationService];
+    return [this.heaterService, this.informationService]; // Bao gồm cả AccessoryInformation
   }
 }
