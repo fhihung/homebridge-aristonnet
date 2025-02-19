@@ -25,25 +25,25 @@ class AristonWaterHeater {
     this.tokenExpiry = null;
     this.deviceState = {
       power: false,
-      mode: 'manual', // 'manual' hoặc 'timer'
+      mode: 'manual',
       currentTemp: 30,
       targetTemp: 40,
       heatingActive: false
     };
 
-    // Cache settings
-    this.cacheDuration = 30000; // Giảm thời gian cache xuống 30s
+    // Cache và refresh
+    this.cacheDuration = 30000; // Cache trong 30 giây
     this.lastUpdate = 0;
-    
+    this.lastAPICall = 0;
+    this.minAPICallInterval = 30000; // Tối thiểu 30 giây giữa các lần call API
+    this.refreshTimeout = null;
+
     // Config validation
     this.minTemperature = Math.max(40, config.minTemperature || 40);
-    this.maxTemperature = Math.max(this.minTemperature, config.maxTemperature || 100);
+    this.maxTemperature = Math.max(this.minTemperature, config.maxTemperature || 80);
 
-    // Khởi tạo services
     this.initServices();
-    this.setupAutoRefresh();
-    
-    this.login().catch(err => this.log.error('Initial login failed:', err));
+    this.log.info('Ariston Water Heater initialized');
   }
 
   initServices() {
@@ -98,7 +98,14 @@ class AristonWaterHeater {
   }
 
   async fetchDeviceState() {
+    const now = Date.now();
+    if (now - this.lastAPICall < this.minAPICallInterval) {
+      this.log.debug('Skipping API call: Too frequent');
+      return;
+    }
+
     try {
+      this.log.debug('Fetching device state from API...');
       const response = await this.makeRequest(() => 
         axios.get(`https://www.ariston-net.remotethermo.com/api/v2/velis/medPlantData/${this.plantId}`, {
           headers: { 'ar.authToken': this.token }
@@ -114,30 +121,86 @@ class AristonWaterHeater {
         heatingActive: data.heatingActive
       };
       this.lastUpdate = Date.now();
+      this.lastAPICall = Date.now();
+      this.log.info('Device state updated successfully');
     } catch (err) {
       this.log.error('Failed to fetch device state:', err);
+      throw err;
     }
   }
 
+  async makeRequest(requestFunction) {
+    await this.ensureToken();
+    try {
+      const response = await requestFunction();
+      const config = response.config;
+      this.log.info(`✅ API Success: ${config.method.toUpperCase()} ${config.url}`);
+      return response;
+    } catch (error) {
+      const config = error.config;
+      this.log.error(`❌ API Failed: ${config?.method?.toUpperCase() || 'UNKNOWN'} ${config?.url || 'UNKNOWN'} - ${error.message}`);
+      
+      if (error.response?.status === 401) {
+        this.log.info('🔄 Refreshing expired token...');
+        await this.login();
+        return requestFunction();
+      }
+      throw error;
+    }
+  }
+    // Cải tiến các hàm GET
+    getCurrentTemperature(callback) {
+      this.log.debug('📡 Getting current temperature');
+      this.handleGetRequest();
+      callback(null, this.deviceState.currentTemp);
+    }
+  
+    getTargetTemperature(callback) {
+      this.log.debug('📡 Getting target temperature');
+      this.handleGetRequest();
+      callback(null, this.deviceState.targetTemp);
+    }
+  
+    async handleGetRequest() {
+      const now = Date.now();
+      if (now - this.lastUpdate > this.cacheDuration) {
+        this.log.debug('Cache expired, refreshing device state...');
+        try {
+          await this.fetchDeviceState();
+          this.updateHomekitState();
+        } catch (err) {
+          this.log.error('Background refresh failed:', err);
+        }
+      } else {
+        this.log.debug('Using cached device state');
+      }
+    }
+  
+    scheduleDebouncedRefresh() {
+      if (this.refreshTimeout) clearTimeout(this.refreshTimeout);
+      
+      this.refreshTimeout = setTimeout(() => {
+        this.fetchDeviceState()
+          .then(() => {
+            this.updateHomekitState();
+            this.log.debug('🔄 Device state updated by debounced refresh');
+          })
+          .catch(err => this.log.error('Debounced refresh failed:', err));
+      }, 500);
+    }
+
+  // Cập nhật các giá trị cho HomeKit
   updateHomekitState() {
-    // Cập nhật tất cả characteristics
-    this.heaterService
-      .getCharacteristic(Characteristic.CurrentTemperature)
-      .updateValue(this.deviceState.currentTemp);
+    this.log.debug('🔄 Updating HomeKit characteristics');
     
-    this.heaterService
-      .getCharacteristic(Characteristic.TargetTemperature)
-      .updateValue(this.deviceState.targetTemp);
-    
-    this.heaterService
-      .getCharacteristic(Characteristic.CurrentHeatingCoolingState)
-      .updateValue(this.deviceState.heatingActive ? 
-        Characteristic.CurrentHeatingCoolingState.HEAT : 
-        Characteristic.CurrentHeatingCoolingState.OFF);
-    
-    this.heaterService
-      .getCharacteristic(Characteristic.TargetHeatingCoolingState)
-      .updateValue(this.mapModeToTargetState(this.deviceState.mode));
+    [
+      [Characteristic.CurrentTemperature, this.deviceState.currentTemp],
+      [Characteristic.TargetTemperature, this.deviceState.targetTemp],
+      [Characteristic.CurrentHeatingCoolingState, this.deviceState.heatingActive ? 1 : 0],
+      [Characteristic.TargetHeatingCoolingState, this.mapModeToTargetState(this.deviceState.mode)]
+    ].forEach(([characteristic, value]) => {
+      this.heaterService.getCharacteristic(characteristic).updateValue(value);
+    });
   }
 
   mapModeToTargetState(mode) {
@@ -171,42 +234,28 @@ class AristonWaterHeater {
     }
   }
 
-  async makeRequest(requestFunction) {
-    await this.ensureToken();
-    try {
-      return await requestFunction();
-    } catch (error) {
-      if (error.response?.status === 401) {
-        this.log.info('Refreshing expired token...');
-        await this.login();
-        return requestFunction();
-      }
-      throw error;
-    }
-  }
-
   async ensureToken() {
     if (!this.token || Date.now() >= this.tokenExpiry) {
       await this.login();
     }
   }
 
-  // Các hàm GET/SET characteristics
   async getCurrentTemperature(callback) {
-    if (Date.now() - this.lastUpdate > this.cacheDuration) {
-      await this.fetchDeviceState();
-    }
-    callback(null, this.deviceState.currentTemp);
+    this.log.debug('Getting current temperature');
+    this.handleGetRequest().finally(() => {
+      callback(null, this.deviceState.currentTemp);
+    });
   }
 
   async getTargetTemperature(callback) {
-    if (Date.now() - this.lastUpdate > this.cacheDuration) {
-      await this.fetchDeviceState();
-    }
-    callback(null, this.deviceState.targetTemp);
+    this.log.debug('Getting target temperature');
+    this.handleGetRequest().finally(() => {
+      callback(null, this.deviceState.targetTemp);
+    });
   }
 
   async setTargetTemperature(value, callback) {
+    this.log.debug(`Setting target temperature to ${value}`);
     try {
       await this.makeRequest(() => 
         axios.post(
@@ -216,7 +265,8 @@ class AristonWaterHeater {
         )
       );
       
-      await this.fetchDeviceState(); // Cập nhật lại trạng thái mới nhất
+      // Cập nhật state sau khi set thành công
+      await this.fetchDeviceState();
       callback(null);
     } catch (err) {
       callback(err);
@@ -224,6 +274,7 @@ class AristonWaterHeater {
   }
 
   async setHeatingState(value, callback) {
+    this.log.debug(`Setting heating state to ${value}`);
     try {
       let newMode;
       switch (value) {
@@ -245,7 +296,8 @@ class AristonWaterHeater {
         )
       );
 
-      await this.fetchDeviceState(); // Cập nhật lại trạng thái
+      // Cập nhật state sau khi set thành công
+      await this.fetchDeviceState();
       callback(null);
     } catch (err) {
       callback(err);
