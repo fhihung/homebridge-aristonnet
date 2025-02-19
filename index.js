@@ -29,8 +29,8 @@ class AristonWaterHeater {
     this.cacheDuration = 300000; // 5 minutes
     this.activeRefreshThreshold = 10000; // 10 seconds
     this.cachedData = {
-      currentTemp: 30,
-      targetTemp: 30,
+      currentTemp: 40,
+      targetTemp: 40,
       powerState: false
     };
 
@@ -63,8 +63,8 @@ class AristonWaterHeater {
     this.heaterService
       .getCharacteristic(Characteristic.TargetTemperature)
       .setProps({
-        minValue: 30,
-        maxValue: 100,
+        minValue: 40,
+        maxValue: 80,
         minStep: 1
       })
       .on('set', this.setTargetTemperature.bind(this))
