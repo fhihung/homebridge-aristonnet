@@ -1,6 +1,6 @@
 {
   "name": "homebridge-aristonnet",
-  "version": "1.2.8",
+  "version": "1.3.0",
   "description": "A plugin for control Ariston Water Heater",
   "main": "index.js",
   "engines": {

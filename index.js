@@ -19,6 +19,8 @@ class AristonWaterHeater {
     this.plantId = config.plantId;
     this.model = config.model || 'Unknown Model';
     this.serialNumber = config.serial_number || 'Unknown Serial';
+    this.minTemp = config.minTemp || 40; // Thêm dòng này
+    this.maxTemp = config.maxTemp || 80; // Thêm dòng này
 
     this.token = null;
     this.tokenExpiry = null;
@@ -63,12 +65,12 @@ class AristonWaterHeater {
     this.heaterService
       .getCharacteristic(Characteristic.TargetTemperature)
       .setProps({
-        minValue: 40,
-        maxValue: 80,
+        minValue: this.minTemp, 
+        maxValue: this.maxTemp,
         minStep: 1
       })
       .on('set', this.setTargetTemperature.bind(this))
-      .on('get', this.getTargetTemperature.bind(this));
+      .on('get', (cb) => this.handleGetRequest('targetTemp', cb));
 
     // Current Temperature
     this.heaterService
