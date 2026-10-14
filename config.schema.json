@@ -1,0 +1,65 @@
+{
+  "pluginAlias": "AristonWaterHeater",
+  "pluginType": "accessory",
+  "singular": false,
+  "headerDisplay": "Control an Ariston Velis / Lydos water heater through the Ariston NET cloud.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Ariston Heater",
+        "required": true
+      },
+      "username": {
+        "title": "Ariston NET email",
+        "type": "string",
+        "format": "email",
+        "required": true
+      },
+      "password": {
+        "title": "Ariston NET password",
+        "type": "string",
+        "required": true,
+        "x-schema-form": { "type": "password" }
+      },
+      "plantId": {
+        "title": "Plant ID",
+        "type": "string",
+        "required": true,
+        "description": "Found in the URL of your device page on ariston-net.remotethermo.com."
+      },
+      "model": {
+        "title": "Model",
+        "type": "string",
+        "placeholder": "VELIS Tech Dry"
+      },
+      "serial_number": {
+        "title": "Serial number",
+        "type": "string"
+      },
+      "minTemp": {
+        "title": "Minimum temperature (°C)",
+        "type": "integer",
+        "default": 40,
+        "minimum": 0,
+        "maximum": 100
+      },
+      "maxTemp": {
+        "title": "Maximum temperature (°C)",
+        "type": "integer",
+        "default": 80,
+        "minimum": 0,
+        "maximum": 100
+      },
+      "refreshInterval": {
+        "title": "Refresh interval (seconds)",
+        "type": "integer",
+        "default": 300,
+        "minimum": 60,
+        "description": "How often to poll Ariston NET in the background."
+      }
+    }
+  }
+}

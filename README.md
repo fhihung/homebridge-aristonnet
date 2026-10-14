@@ -1,82 +1,77 @@
-Here’s a more polished and detailed version of the README for your Homebridge AristonNet plugin:
-
----
-
 # Homebridge AristonNet
 
-**Homebridge Plugin for Ariston Aqua Water Heaters**
+**Homebridge plugin for Ariston water heaters connected to Ariston NET** (Velis, Lydos, Andris, Slim…).
 
----
+Exposes the heater as a HomeKit thermostat so you can:
 
-## Description
+- See the current water temperature
+- Set the target temperature
+- Turn the heater on / off
 
-This Homebridge plugin allows you to seamlessly control your Ariston Aqua Water Heater devices, such as the **Andris** and **Slim** models, through the **AristonNet platform**. It provides functionalities to **get the current temperature**, **set a target temperature**, and **turn the heater on/off** directly from the Homebridge interface.
+Compatible with **Homebridge 1.8+ and Homebridge 2.x**.
 
-### Key Features:
-- **Temperature Control**: Get real-time temperature data and set a new target temperature for your water heater.
-- **Power Control**: Turn the heater on or off as needed.
-- **Device Compatibility**: Works with Ariston devices that are connected via the AristonNet platform.
+## Requirements
 
-### Requirements:
-- **AristonNet Account**: You need an account on the AristonNet platform ([ariston-net.remotethermo.com](https://www.ariston-net.remotethermo.com/)), which is the same as the Ariston mobile app.
-- **PlantID**: Locate the PlantID for your device in the URL when logged into the AristonNet platform.
-
-### Setup Instructions:
-1. **Log in to AristonNet**: Go to the AristonNet website and log in with your credentials.
-2. **Find your PlantID**: In the URL of your device page, find your PlantID to configure the plugin.
-3. **Configure the Plugin**: Input your AristonNet account credentials and PlantID into the Homebridge configuration file (`config.json`).
-
----
+- An **Ariston NET** account ([ariston-net.remotethermo.com](https://www.ariston-net.remotethermo.com/)), the same one used by the Ariston mobile app.
+- Your **Plant ID**: log in to Ariston NET and copy it from the URL of your device page.
 
 ## Installation
 
-Follow these steps to install and configure the plugin:
+Search for `homebridge-aristonnet` in the Homebridge UI **Plugins** tab, or:
 
-1. **Install Homebridge**:
-   ```
-   npm install -g homebridge
-   ```
-2. **Install the AristonNet Plugin**:
-   ```
-   npm install -g homebridge-aristonnet
-   ```
-3. **Configure the Plugin**: Add the necessary details (email, password, PlantID) to your Homebridge configuration file.
+```
+npm install -g homebridge-aristonnet
+```
 
-### Alternative Installation (Manual):
-If you prefer manual installation (e.g., from a fork):
-- Clone the Git repository to a local directory (e.g., `/usr/local/homebridge/plugins/homebridge-aristonnet`).
-- Set the plugin directory in the Homebridge options: `-P /usr/local/homebridge/plugins` (typically via `HOMEBRIDGE_OPTS` in `/etc/default/homebridge`).
-
----
+Then configure it from the plugin **Settings** in the Homebridge UI.
 
 ## Configuration
-
-Here is an example configuration for adding the Ariston Water Heater to Homebridge (`config.json`):
 
 ```json
 "accessories": [
   {
     "accessory": "AristonWaterHeater",
-    "name": "My Heater",             // Customizable device name
-    "username": "email@gmail.com",   // Your AristonNet email
-    "password": "your_password",     // Your AristonNet password
-    "plantId": "your_plant_id",      // Device-specific PlantID
-    "model": "VELIS Tech Dry",       // Customizable model name
-    "serial_number": "123456789",    // Optional serial number
-    "minTemperature": 40,            // Min Temperature
-    "maxTemperature": 80             // Max Temperature
+    "name": "Water Heater",
+    "username": "email@gmail.com",
+    "password": "your_password",
+    "plantId": "your_plant_id",
+    "model": "VELIS Tech Dry",
+    "serial_number": "123456789",
+    "minTemp": 40,
+    "maxTemp": 80,
+    "refreshInterval": 300
   }
 ]
 ```
 
-Replace the placeholders with your actual credentials and device information.
+| Key | Required | Default | Description |
+|---|---|---|---|
+| `name` | yes | `Ariston Heater` | Name shown in the Home app |
+| `username` | yes | | Ariston NET email |
+| `password` | yes | | Ariston NET password |
+| `plantId` | yes | | Device Plant ID |
+| `model` | no | `Unknown Model` | Shown in accessory info |
+| `serial_number` | no | `Unknown Serial` | Shown in accessory info |
+| `minTemp` | no | `40` | Lowest selectable target temperature (°C) |
+| `maxTemp` | no | `80` | Highest selectable target temperature (°C) |
+| `refreshInterval` | no | `300` | Background polling interval in seconds (min 60) |
 
----
+`minTemperature` / `maxTemperature` are still accepted for older configs.
 
-## To-Do List
-- **UI Enhancement**: Add a user interface for inputting and updating email and password.
-- **Code Refactoring**: Improve code structure for maintainability and performance.
+## How it works
 
----
+- HomeKit requests are answered instantly from a local cache; the cache is refreshed in the background, so the accessory never shows "No Response" because of a slow cloud.
+- Changes made in the Home app are applied immediately in HomeKit and sent to Ariston NET after a short debounce (dragging the temperature slider sends a single command). If the command fails, the previous value is restored.
+- Login tokens are reused and refreshed automatically; transient errors (timeouts, HTTP 429/5xx) are retried with backoff.
+- Credentials are never written to the Homebridge log. Enable Homebridge debug mode for detailed polling logs.
 
-Feel free to adapt or expand further as you develop more features for the plugin!
+## Changelog
+
+### 2.0.0
+- Homebridge 2.0 support (`onGet` / `onSet` API)
+- Fixed: the account password could be written to the Homebridge log when a request failed
+- Fixed: "No Response" in the Home app while the Ariston cloud was slow
+- Fixed: target temperature outside `minTemp`/`maxTemp` caused HomeKit warnings
+- Debounced temperature changes, optimistic updates with rollback on failure
+- Added `config.schema.json` for configuration from the Homebridge UI
+- Removed the unused `requestretry` dependency
